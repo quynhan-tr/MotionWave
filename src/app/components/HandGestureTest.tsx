@@ -545,16 +545,12 @@ export default function HandGestureTracker() {
       
       <div className="relative z-10 max-w-7xl mx-auto p-6 h-screen flex flex-col">
         <div className="flex items-center justify-between mb-6">
-          <h1 className="text-4xl font-light text-white tracking-tight drop-shadow-lg">
+          <h1 
+            className="text-4xl font-light text-white tracking-tight drop-shadow-lg cursor-pointer hover:opacity-80 transition-opacity duration-300"
+            onClick={() => window.location.reload()}
+          >
             Motion <span className="font-normal bg-gradient-to-r from-cyan-300 via-blue-300 to-violet-300 bg-clip-text text-transparent">Wave</span>
           </h1>
-          <button 
-            onClick={() => setHandPreference(null)}
-            className="px-6 py-3 bg-white/10 backdrop-blur-xl hover:bg-white/20 border border-white/30 hover:border-cyan-300/50 rounded-2xl text-sm font-light transition-all duration-500 relative overflow-hidden group shadow-lg hover:shadow-cyan-400/20"
-          >
-            <div className="absolute inset-0 bg-gradient-to-r from-cyan-400/10 via-blue-400/5 to-violet-400/10 opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
-            <span className="relative">Change Hand</span>
-          </button>
         </div>
         
         {isLoading && (
