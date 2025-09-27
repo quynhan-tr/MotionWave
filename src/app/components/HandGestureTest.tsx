@@ -1,6 +1,10 @@
 'use client';
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
+import { useHarmonizer } from '../../hooks/useHarmonizer';
+import { audioEngine } from '../../utils/audioEngine';
+import { midiToNoteName } from '../../types/harmonizer';
+import type { HarmonyChord } from '../../types/harmonizer';
 
 type HandPreference = 'left' | 'right' | null;
 
@@ -48,11 +52,23 @@ export default function HandGestureTracker() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const handsRef = useRef<MediaPipeHands | null>(null);
+  const lastPlayedNoteRef = useRef<number | null>(null);
   
   // All hooks must be declared before any conditional returns
   const [handPreference, setHandPreference] = useState<HandPreference>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  
+  // Harmonizer integration
+  const {
+    isLoading: harmonizerLoading,
+    isReady: harmonizerReady,
+    error: harmonizerError,
+    currentHarmony,
+    harmonizeNoteRealTime,
+    isRealTimeMode,
+    toggleRealTimeMode
+  } = useHarmonizer();
   
   // Control hand (dominant hand) - pitch and vowel
   const [controlHand, setControlHand] = useState<HandPosition>({
@@ -103,13 +119,7 @@ export default function HandGestureTracker() {
     return whiteKeys[keyIndex];
   }, []);
 
-  // Convert MIDI note number to note name (e.g., 60 -> "C4")
-  const midiToNoteName = useCallback((midiNote: number): string => {
-    const noteNames = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-    const octave = Math.floor(midiNote / 12) - 1;
-    const noteIndex = midiNote % 12;
-    return `${noteNames[noteIndex]}${octave}`;
-  }, []);
+  // Use the imported midiToNoteName function from harmonizer types
 
 
   // Detect vowel based on hand gesture
@@ -375,6 +385,55 @@ export default function HandGestureTracker() {
 
   const currentPitch = controlHand.detected ? getPitchFromY(controlHand.y) : 0;
   const currentVolume = volumeHand.detected ? getVolumeFromY(volumeHand.y) : 0.5;
+  
+  // Enable real-time mode automatically when harmonizer is ready
+  useEffect(() => {
+    if (harmonizerReady && !isRealTimeMode) {
+      toggleRealTimeMode();
+    }
+  }, [harmonizerReady, isRealTimeMode, toggleRealTimeMode]);
+  
+  // Play audio when harmony changes
+  useEffect(() => {
+    if (currentHarmony) {
+      audioEngine.playChord(
+        currentHarmony.soprano.midiNote,
+        currentHarmony.alto.midiNote,
+        currentHarmony.tenor.midiNote,
+        currentHarmony.bass.midiNote
+      ).catch(error => {
+        console.error('Audio playback failed:', error);
+      });
+    }
+  }, [currentHarmony]);
+  
+  // Trigger harmonization when control hand position changes
+  useEffect(() => {
+    if (controlHand.detected && harmonizerReady && controlHand.vowel !== 'NONE') {
+      const currentMidiNote = pitchToMidi(currentPitch);
+      
+      // Only harmonize if the note has changed to avoid excessive processing
+      if (currentMidiNote !== lastPlayedNoteRef.current) {
+        try {
+          harmonizeNoteRealTime(currentMidiNote);
+          lastPlayedNoteRef.current = currentMidiNote;
+        } catch (err) {
+          console.error('Failed to harmonize note:', err);
+        }
+      }
+    } else if (!controlHand.detected || controlHand.vowel === 'NONE') {
+      // Stop audio when hand is not detected or no gesture
+      audioEngine.stopAll();
+      lastPlayedNoteRef.current = null;
+    }
+  }, [controlHand.detected, controlHand.vowel, currentPitch, harmonizerReady, harmonizeNoteRealTime, pitchToMidi]);
+  
+  // Cleanup audio on unmount
+  useEffect(() => {
+    return () => {
+      audioEngine.destroy();
+    };
+  }, []);
 
   // Hand preference selection page
   if (handPreference === null) {
@@ -546,24 +605,69 @@ export default function HandGestureTracker() {
           </div>
           
           {/* Compact Side Panel */}
-          <div className="w-56 space-y-3">
-            {/* Current Note Display */}
+          <div className="w-80 space-y-3">
+            {/* SATB Harmony Display */}
             <div className="p-6 bg-white/10 backdrop-blur-2xl rounded-[1.5rem] border border-white/20 relative overflow-hidden shadow-xl">
               <div className="absolute inset-0 bg-gradient-to-br from-cyan-400/5 via-blue-400/8 to-violet-400/5"></div>
-              <div className="relative text-center">
-                <div className="text-white/60 text-sm font-light mb-2">Current Note</div>
-                {controlHand.detected ? (
-                  <div className="text-3xl font-light text-white mb-2">
-                    ♪ {midiToNoteName(pitchToMidi(currentPitch))}
+              <div className="relative">
+                <div className="text-white/60 text-sm font-light mb-4 text-center">SATB Harmony</div>
+                {currentHarmony ? (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="text-center p-3 bg-white/5 rounded-lg">
+                      <div className="text-xs font-medium text-red-300 mb-1">Soprano</div>
+                      <div className="text-lg font-light text-white">
+                        {midiToNoteName(currentHarmony.soprano.midiNote)}
+                      </div>
+                    </div>
+                    <div className="text-center p-3 bg-white/5 rounded-lg">
+                      <div className="text-xs font-medium text-teal-300 mb-1">Alto</div>
+                      <div className="text-lg font-light text-white">
+                        {midiToNoteName(currentHarmony.alto.midiNote)}
+                      </div>
+                    </div>
+                    <div className="text-center p-3 bg-white/5 rounded-lg">
+                      <div className="text-xs font-medium text-blue-300 mb-1">Tenor</div>
+                      <div className="text-lg font-light text-white">
+                        {midiToNoteName(currentHarmony.tenor.midiNote)}
+                      </div>
+                    </div>
+                    <div className="text-center p-3 bg-white/5 rounded-lg">
+                      <div className="text-xs font-medium text-green-300 mb-1">Bass</div>
+                      <div className="text-lg font-light text-white">
+                        {midiToNoteName(currentHarmony.bass.midiNote)}
+                      </div>
+                    </div>
                   </div>
                 ) : (
-                  <div className="text-2xl font-light text-white/40 mb-2">
-                    ♪ ---
+                  <div className="text-center py-6">
+                    {harmonizerLoading ? (
+                      <div className="text-sm text-white/60">Loading harmonizer...</div>
+                    ) : harmonizerError ? (
+                      <div className="text-sm text-red-300">Harmonizer error</div>
+                    ) : controlHand.detected && controlHand.vowel !== 'NONE' ? (
+                      <div className="text-sm text-white/60">Generating harmony...</div>
+                    ) : (
+                      <div className="text-sm text-white/40">
+                        Make a gesture to generate harmony!
+                      </div>
+                    )}
                   </div>
                 )}
-                <div className="text-xs text-white/50">
-                  {controlHand.detected ? `${(currentPitch * 100).toFixed(0)}%` : 'No hand detected'}
-                </div>
+                
+                {/* Current melody note indicator */}
+                {controlHand.detected && (
+                  <div className="mt-4 pt-4 border-t border-white/10">
+                    <div className="text-center">
+                      <div className="text-xs text-white/50 mb-1">Melody Note</div>
+                      <div className="text-xl font-light text-cyan-300">
+                        ♪ {midiToNoteName(pitchToMidi(currentPitch))}
+                      </div>
+                      <div className="text-xs text-white/40">
+                        {(currentPitch * 100).toFixed(0)}% pitch
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
             
