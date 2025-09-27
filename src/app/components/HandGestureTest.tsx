@@ -469,9 +469,7 @@ export default function HandGestureTracker() {
         
         <div className="relative z-10 text-center max-w-md">
           <h1 className="text-6xl font-light text-white mb-3 tracking-tight drop-shadow-lg">
-            Motion
-            <br />
-            <span className="font-normal bg-gradient-to-r from-cyan-300 via-blue-300 to-violet-300 bg-clip-text text-transparent">Wave</span>
+            Motion<span className="font-normal bg-gradient-to-r from-cyan-300 via-blue-300 to-violet-300 bg-clip-text text-transparent">Wave</span>
           </h1>
           <p className="text-white/80 mb-16 text-lg font-light">Choose your dominant hand for gesture control</p>
           
@@ -549,7 +547,7 @@ export default function HandGestureTracker() {
             className="text-4xl font-light text-white tracking-tight drop-shadow-lg cursor-pointer hover:opacity-80 transition-opacity duration-300"
             onClick={() => window.location.reload()}
           >
-            Motion <span className="font-normal bg-gradient-to-r from-cyan-300 via-blue-300 to-violet-300 bg-clip-text text-transparent">Wave</span>
+            Motion<span className="font-normal bg-gradient-to-r from-cyan-300 via-blue-300 to-violet-300 bg-clip-text text-transparent">Wave</span>
           </h1>
         </div>
         
