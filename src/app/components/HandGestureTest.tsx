@@ -2,289 +2,7 @@
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 
-// Audio synthesis class using Web Audio API directly
-class VoiceScanner {
-  private audioContext: AudioContext | null = null;
-  private oscillators: { [key: string]: OscillatorNode | null } = {};
-  private gainNodes: { [key: string]: GainNode } = {};
-  private filterNodes: { [key: string]: BiquadFilterNode } = {};
-  private initialized = false;
-
-  async initialize() {
-    if (this.initialized) return;
-    
-    try {
-      this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-      
-      // Create audio nodes for each voice
-      const voices = ['bass', 'tenor', 'mezzoSoprano', 'soprano'];
-      
-      voices.forEach(voice => {
-        // Create gain node for volume control
-        this.gainNodes[voice] = this.audioContext!.createGain();
-        this.gainNodes[voice].gain.value = 0.3; // Default volume
-        
-        // Create filter for vowel formants
-        this.filterNodes[voice] = this.audioContext!.createBiquadFilter();
-        this.filterNodes[voice].type = 'bandpass';
-        this.filterNodes[voice].Q.value = 2;
-        this.filterNodes[voice].frequency.value = this.getFormantFrequency(voice, 'A');
-        
-        // Connect filter to gain to destination
-        this.filterNodes[voice].connect(this.gainNodes[voice]);
-        this.gainNodes[voice].connect(this.audioContext!.destination);
-        
-        // Initialize oscillator as null
-        this.oscillators[voice] = null;
-      });
-      
-      this.initialized = true;
-    } catch (error) {
-      console.error('Failed to initialize Web Audio:', error);
-    }
-  }
-
-  private getFormantFrequency(voice: string, vowel: 'A' | 'O'): number {
-    const formants = {
-      bass: { A: 600, O: 400 },
-      tenor: { A: 650, O: 430 },
-      mezzoSoprano: { A: 700, O: 460 },
-      soprano: { A: 750, O: 500 }
-    };
-    
-    return formants[voice as keyof typeof formants]?.[vowel] || 600;
-  }
-
-  private midiToFrequency(midiNote: number): number {
-    return 440 * Math.pow(2, (midiNote - 69) / 12);
-  }
-
-  playNote(voice: string, midiNote: number, velocity: number, vowel: 'A' | 'O') {
-    if (!this.initialized || !this.audioContext) return;
-    
-    // Stop current oscillator if playing
-    this.stopNote(voice);
-    
-    // Create new oscillator
-    const oscillator = this.audioContext.createOscillator();
-    oscillator.type = 'sawtooth';
-    oscillator.frequency.value = this.midiToFrequency(midiNote);
-    
-    // Connect to filter chain
-    oscillator.connect(this.filterNodes[voice]);
-    
-    // Update filter frequency for vowel
-    this.filterNodes[voice].frequency.setTargetAtTime(
-      this.getFormantFrequency(voice, vowel),
-      this.audioContext.currentTime,
-      0.1
-    );
-    
-    // Set volume
-    this.gainNodes[voice].gain.setTargetAtTime(
-      velocity * 0.3,
-      this.audioContext.currentTime,
-      0.05
-    );
-    
-    // Start oscillator
-    oscillator.start();
-    this.oscillators[voice] = oscillator;
-  }
-
-  updateNote(voice: string, midiNote: number, velocity: number, vowel: 'A' | 'O') {
-    if (!this.initialized || !this.audioContext) return;
-    
-    // Update filter frequency for vowel changes
-    this.filterNodes[voice].frequency.setTargetAtTime(
-      this.getFormantFrequency(voice, vowel),
-      this.audioContext.currentTime,
-      0.05
-    );
-    
-    // Update volume
-    this.gainNodes[voice].gain.setTargetAtTime(
-      velocity * 0.3,
-      this.audioContext.currentTime,
-      0.05
-    );
-    
-    // Update frequency if oscillator exists
-    if (this.oscillators[voice]) {
-      this.oscillators[voice]!.frequency.setTargetAtTime(
-        this.midiToFrequency(midiNote),
-        this.audioContext.currentTime,
-        0.05
-      );
-    }
-  }
-
-  stopNote(voice: string) {
-    if (!this.initialized || !this.audioContext) return;
-    
-    const oscillator = this.oscillators[voice];
-    if (oscillator) {
-      try {
-        oscillator.stop();
-      } catch (e) {
-        // Oscillator may already be stopped
-      }
-      this.oscillators[voice] = null;
-    }
-  }
-
-  setVolume(voice: string, volume: number) {
-    if (!this.initialized || !this.audioContext) return;
-    
-    this.gainNodes[voice].gain.setTargetAtTime(
-      volume * 0.3,
-      this.audioContext.currentTime,
-      0.1
-    );
-  }
-
-  dispose() {
-    // Stop all oscillators
-    Object.keys(this.oscillators).forEach(voice => {
-      this.stopNote(voice);
-    });
-    
-    // Clean up audio context
-    if (this.audioContext) {
-      this.audioContext.close();
-      this.audioContext = null;
-    }
-    
-    this.oscillators = {};
-    this.gainNodes = {};
-    this.filterNodes = {};
-    this.initialized = false;
-  }
-}
-interface Note {
-  midiNote: number;
-  velocity: number;
-  vowel: 'A' | 'O';
-}
-
-interface HarmonyResult {
-  bass: Note;
-  tenor: Note;
-  mezzoSoprano: Note;
-  soprano: Note;
-}
-
 type HandPreference = 'left' | 'right' | null;
-
-// Simple built-in harmonizer to avoid import issues
-class SimpleHarmonizer {
-  private previousHarmony: HarmonyResult | null = null;
-
-  generateHarmony(
-    leadVoice: 'bass' | 'tenor' | 'mezzoSoprano' | 'soprano',
-    leadNote: Note,
-    volume: number
-  ): HarmonyResult {
-    const leadMidi = leadNote.midiNote;
-    
-    // Generate basic chord harmony
-    const chordType = this.getChordType(leadMidi);
-    let harmony = this.generateChordHarmony(leadMidi, chordType);
-    
-    // Apply voice leading if we have previous harmony
-    if (this.previousHarmony) {
-      harmony = this.smoothVoiceLeading(harmony, this.previousHarmony);
-    }
-    
-    // Set volumes and vowels
-    Object.keys(harmony).forEach(voice => {
-      const voiceKey = voice as keyof HarmonyResult;
-      if (voice === leadVoice) {
-        harmony[voiceKey].velocity = volume;
-        harmony[voiceKey].vowel = leadNote.vowel;
-      } else {
-        harmony[voiceKey].velocity = volume * 0.6;
-        harmony[voiceKey].vowel = Math.random() < 0.8 ? leadNote.vowel : (leadNote.vowel === 'A' ? 'O' : 'A');
-      }
-    });
-    
-    this.previousHarmony = harmony;
-    return harmony;
-  }
-
-  private getChordType(midiNote: number): 'major' | 'minor' {
-    const noteClass = midiNote % 12;
-    // Prefer major for white keys that are commonly major tonics
-    const majorNotes = [0, 2, 4, 5, 7, 9]; // C, D, E, F, G, A
-    return majorNotes.includes(noteClass) ? 'major' : 'minor';
-  }
-
-  private generateChordHarmony(leadMidi: number, chordType: 'major' | 'minor'): HarmonyResult {
-    const third = chordType === 'major' ? 4 : 3;
-    const fifth = 7;
-    
-    return {
-      bass: { midiNote: this.constrainToRange(leadMidi - 12, 40, 64), velocity: 0.6, vowel: 'A' },
-      tenor: { midiNote: this.constrainToRange(leadMidi - fifth, 48, 69), velocity: 0.6, vowel: 'A' },
-      mezzoSoprano: { midiNote: this.constrainToRange(leadMidi - third, 57, 77), velocity: 0.6, vowel: 'A' },
-      soprano: { midiNote: this.constrainToRange(leadMidi, 60, 84), velocity: 0.6, vowel: 'A' }
-    };
-  }
-
-  private constrainToRange(note: number, min: number, max: number): number {
-    while (note < min) note += 12;
-    while (note > max) note -= 12;
-    return Math.max(min, Math.min(max, note));
-  }
-
-  private smoothVoiceLeading(newHarmony: HarmonyResult, prevHarmony: HarmonyResult): HarmonyResult {
-    Object.keys(newHarmony).forEach(voice => {
-      const voiceKey = voice as keyof HarmonyResult;
-      const newNote = newHarmony[voiceKey].midiNote;
-      const prevNote = prevHarmony[voiceKey].midiNote;
-      const interval = Math.abs(newNote - prevNote);
-      
-      // If interval is large, try octave alternatives
-      if (interval > 6) {
-        const alternatives = [newNote + 12, newNote - 12];
-        let bestNote = newNote;
-        let smallestInterval = interval;
-        
-        alternatives.forEach(alt => {
-          const ranges = { bass: [40, 64], tenor: [48, 69], mezzoSoprano: [57, 77], soprano: [60, 84] };
-          const [min, max] = ranges[voiceKey] || [40, 84];
-          
-          if (alt >= min && alt <= max) {
-            const altInterval = Math.abs(alt - prevNote);
-            if (altInterval < smallestInterval) {
-              smallestInterval = altInterval;
-              bestNote = alt;
-            }
-          }
-        });
-        
-        newHarmony[voiceKey].midiNote = bestNote;
-      }
-    });
-    
-    return newHarmony;
-  }
-
-  reset(): void {
-    this.previousHarmony = null;
-  }
-}
-
-interface Singer {
-  name: string;
-  range: string;
-  color: string;
-  active: boolean;
-  pitch: number; // 0-1, where 0 is lowest, 1 is highest
-  volume: number; // 0-1, volume level
-  midiNote?: number; // Current MIDI note being sung
-  harmonyNote?: Note; // Current harmony note from harmonizer
-}
 
 interface HandPosition {
   x: number; // 0-1, left to right
@@ -298,7 +16,7 @@ interface VolumeHand {
   detected: boolean;
 }
 
-export default function VirtualOrchestra() {
+export default function HandGestureTracker() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const handsRef = useRef<any>(null);
@@ -322,84 +40,6 @@ export default function VirtualOrchestra() {
     detected: false
   });
   
-  const [singers] = useState<Singer[]>([
-    { name: 'Bass', range: 'E2-E4', color: '#8B4513', active: false, pitch: 0.2, volume: 0.5, midiNote: 52 },
-    { name: 'Tenor', range: 'C3-A4', color: '#4169E1', active: false, pitch: 0.4, volume: 0.5, midiNote: 60 },
-    { name: 'Mezzo-Soprano', range: 'A3-F5', color: '#FF69B4', active: false, pitch: 0.6, volume: 0.5, midiNote: 67 },
-    { name: 'Soprano', range: 'C4-C6', color: '#FFD700', active: false, pitch: 0.8, volume: 0.5, midiNote: 72 }
-  ]);
-
-  // Harmonizer state
-  const [harmonizer] = useState(() => new SimpleHarmonizer());
-  const [currentHarmony, setCurrentHarmony] = useState<HarmonyResult | null>(null);
-  
-  // Audio synthesis state
-  const [voiceSynth] = useState(() => new VoiceScanner());
-  const [audioEnabled, setAudioEnabled] = useState(false);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const previousNotesRef = useRef<{ [voice: string]: number }>({});
-  
-  // Manual controls for testing audio when MediaPipe fails
-  const [manualMode, setManualMode] = useState(false);
-  const [manualPitch, setManualPitch] = useState(0.5);
-  const [manualVolume, setManualVolume] = useState(0.7);
-  const [manualVowel, setManualVowel] = useState<'A' | 'O'>('A');
-  const [manualSinger, setManualSinger] = useState(1); // Default to Tenor
-
-  // Initialize audio when user enables it
-  const initializeAudio = useCallback(async () => {
-    try {
-      await voiceSynth.initialize();
-      setAudioEnabled(true);
-    } catch (error) {
-      console.error('Failed to initialize audio:', error);
-    }
-  }, [voiceSynth]);
-
-  // Play harmony notes
-  const playHarmony = useCallback((harmony: HarmonyResult) => {
-    if (!audioEnabled) return;
-    
-    const voices = ['bass', 'tenor', 'mezzoSoprano', 'soprano'] as const;
-    
-    voices.forEach(voice => {
-      const note = harmony[voice];
-      const previousNote = previousNotesRef.current[voice];
-      
-      // Only trigger new note if it changed
-      if (note.midiNote !== previousNote) {
-        voiceSynth.playNote(voice, note.midiNote, note.velocity, note.vowel);
-        previousNotesRef.current[voice] = note.midiNote;
-      } else {
-        // Update existing note (vowel/volume changes)
-        voiceSynth.updateNote(voice, note.midiNote, note.velocity, note.vowel);
-      }
-      
-      // Set volume
-      voiceSynth.setVolume(voice, note.velocity);
-    });
-    
-    setIsPlaying(true);
-  }, [audioEnabled, voiceSynth]);
-
-  // Stop all voices
-  const stopAllVoices = useCallback(() => {
-    if (!audioEnabled) return;
-    
-    const voices = ['bass', 'tenor', 'mezzoSoprano', 'soprano'];
-    voices.forEach(voice => {
-      voiceSynth.stopNote(voice);
-    });
-    
-    previousNotesRef.current = {};
-    setIsPlaying(false);
-  }, [audioEnabled, voiceSynth]);
-  const getActiveSinger = useCallback((x: number): number => {
-    if (x < 0.25) return 0; // Bass
-    if (x < 0.5) return 1;  // Tenor  
-    if (x < 0.75) return 2; // Mezzo-Soprano
-    return 3;               // Soprano
-  }, []);
 
   // Convert Y position to pitch (inverted: top = high pitch)
   const getPitchFromY = useCallback((y: number): number => {
@@ -411,26 +51,18 @@ export default function VirtualOrchestra() {
     return Math.max(0, Math.min(1, 1 - y)); // Invert Y axis
   }, []);
 
-  // Convert pitch (0-1) to MIDI note based on singer's range - WHITE KEYS ONLY
-  const pitchToMidi = useCallback((pitch: number, singerIndex: number): number => {
+  // Convert pitch (0-1) to MIDI note in C4 to E5 range - WHITE KEYS ONLY
+  const pitchToMidi = useCallback((pitch: number): number => {
     // White key patterns for each octave (C, D, E, F, G, A, B)
     const whiteKeyPattern = [0, 2, 4, 5, 7, 9, 11]; // Semitone offsets from C
     
-    const ranges = [
-      { startOctave: 2, startNote: 4, endOctave: 4, endNote: 4 }, // Bass: E2-E4
-      { startOctave: 3, startNote: 0, endOctave: 4, endNote: 5 }, // Tenor: C3-A4  
-      { startOctave: 3, startNote: 5, endOctave: 5, endNote: 3 }, // Mezzo-Soprano: A3-F5
-      { startOctave: 4, startNote: 0, endOctave: 6, endNote: 0 }  // Soprano: C4-C6
-    ];
-    
-    const range = ranges[singerIndex];
-    
-    // Create array of all white keys in the range
+    // Fixed range: C4 to E5 (C4=60, D4=62, E4=64, F4=65, G4=67, A4=69, B4=71, C5=72, D5=74, E5=76)
     const whiteKeys: number[] = [];
     
-    for (let octave = range.startOctave; octave <= range.endOctave; octave++) {
-      const startIdx = (octave === range.startOctave) ? range.startNote : 0;
-      const endIdx = (octave === range.endOctave) ? range.endNote : 6;
+    // C4 to E5 covers octaves 4 and 5
+    for (let octave = 4; octave <= 5; octave++) {
+      const startIdx = (octave === 4) ? 0 : 0; // Start from C for both octaves
+      const endIdx = (octave === 5) ? 2 : 6;   // End at E for octave 5, B for octave 4
       
       for (let noteIdx = startIdx; noteIdx <= endIdx; noteIdx++) {
         const midiNote = (octave + 1) * 12 + whiteKeyPattern[noteIdx];
@@ -451,43 +83,6 @@ export default function VirtualOrchestra() {
     return `${noteNames[noteIndex]}${octave}`;
   }, []);
 
-  // Generate harmony when lead voice changes (supports manual mode)
-  const updateHarmony = useCallback((activeSingerIndex: number, pitch: number, volume: number, vowel: 'A' | 'O' | 'NONE') => {
-    if (activeSingerIndex === -1 || vowel === 'NONE') {
-      stopAllVoices();
-      return;
-    }
-    
-    const singerNames = ['bass', 'tenor', 'mezzoSoprano', 'soprano'] as const;
-    const leadVoice = singerNames[activeSingerIndex];
-    const midiNote = pitchToMidi(pitch, activeSingerIndex);
-    
-    const leadNote: Note = {
-      midiNote,
-      velocity: volume,
-      vowel: vowel as 'A' | 'O'
-    };
-    
-    const harmony = harmonizer.generateHarmony(leadVoice, leadNote, volume);
-    setCurrentHarmony(harmony);
-    
-    // Play the harmony if audio is enabled
-    if (audioEnabled) {
-      playHarmony(harmony);
-    }
-  }, [harmonizer, pitchToMidi, audioEnabled, playHarmony, stopAllVoices]);
-
-  // Manual harmony trigger for testing
-  const triggerManualHarmony = useCallback(() => {
-    updateHarmony(manualSinger, manualPitch, manualVolume, manualVowel);
-  }, [updateHarmony, manualSinger, manualPitch, manualVolume, manualVowel]);
-
-  // Update manual harmony when controls change
-  useEffect(() => {
-    if (manualMode && audioEnabled) {
-      triggerManualHarmony();
-    }
-  }, [manualMode, audioEnabled, triggerManualHarmony, manualPitch, manualVolume, manualVowel, manualSinger]);
 
   // Detect vowel based on hand gesture
   const detectVowel = useCallback((landmarks: any[]): 'A' | 'O' | 'NONE' => {
@@ -523,41 +118,6 @@ export default function VirtualOrchestra() {
     // Draw video frame
     ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
     
-    // Draw soprano label only
-    ctx.font = 'bold 24px Arial';
-    ctx.fillStyle = 'white';
-    ctx.strokeStyle = 'black';
-    ctx.lineWidth = 3;
-    const sopranoText = 'Soprano Control';
-    const textWidth = ctx.measureText(sopranoText).width;
-    const textX = (canvas.width - textWidth) / 2;
-    ctx.strokeText(sopranoText, textX, 40);
-    ctx.fillText(sopranoText, textX, 40);
-
-    // Draw volume indicator on the side
-    const volumeBarX = handPreference === 'right' ? 20 : canvas.width - 40;
-    const volumeBarY = 80;
-    const volumeBarHeight = canvas.height - 160;
-    
-    // Volume bar background
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
-    ctx.fillRect(volumeBarX, volumeBarY, 20, volumeBarHeight);
-    
-    // Volume level indicator
-    const currentVol = volumeHand.detected ? getVolumeFromY(volumeHand.y) : 0.5;
-    const volumeFillHeight = currentVol * volumeBarHeight;
-    ctx.fillStyle = volumeHand.detected ? '#00FF00' : '#666666';
-    ctx.fillRect(volumeBarX, volumeBarY + volumeBarHeight - volumeFillHeight, 20, volumeFillHeight);
-    
-    // Volume label
-    ctx.font = 'bold 16px Arial';
-    ctx.fillStyle = 'white';
-    ctx.strokeStyle = 'black';
-    ctx.lineWidth = 2;
-    const volumeText = 'VOL';
-    const volumeTextX = volumeBarX - (handPreference === 'right' ? 30 : -25);
-    ctx.strokeText(volumeText, volumeTextX, volumeBarY - 10);
-    ctx.fillText(volumeText, volumeTextX, volumeBarY - 10);
 
     if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
       let controlHandData = null;
@@ -648,16 +208,9 @@ export default function VirtualOrchestra() {
       if (controlHandData) {
         setControlHand(controlHandData);
         
-        // Generate harmony for current position
-        const activeIndex = getActiveSinger(controlHandData.x);
-        const currentPitch = getPitchFromY(controlHandData.y);
-        const currentVol = getVolumeFromY(volumeHand.detected ? volumeHand.y : 0.5);
-        
-        updateHarmony(activeIndex, currentPitch, currentVol, controlHandData.vowel);
-        
         // Draw pitch indicator line across full width
         const pitchY = controlHandData.y * canvas.height;
-        ctx.strokeStyle = '#FFD700'; // Soprano gold color
+        ctx.strokeStyle = '#FFD700'; // Gold color for pitch indicator
         ctx.lineWidth = 4;
         ctx.beginPath();
         ctx.moveTo(0, pitchY);
@@ -692,7 +245,7 @@ export default function VirtualOrchestra() {
       setControlHand(prev => ({ ...prev, detected: false, vowel: 'NONE' }));
       setVolumeHand(prev => ({ ...prev, detected: false }));
     }
-  }, [singers, getActiveSinger, detectVowel, handPreference, getVolumeFromY, updateHarmony, getPitchFromY, midiToNoteName, pitchToMidi]);
+  }, [detectVowel, handPreference, getVolumeFromY, getPitchFromY]);
 
   useEffect(() => {
     const initializeCamera = async () => {
@@ -767,9 +320,8 @@ export default function VirtualOrchestra() {
           
         } catch (err) {
           console.error('MediaPipe loading error:', err);
-          setError('MediaPipe failed to load. Switch to manual mode to test audio.');
+          setError('MediaPipe failed to load. Please check your internet connection and try refreshing.');
           setIsLoading(false);
-          setManualMode(true); // Automatically enable manual mode
         }
         
         videoRef.current.onloadedmetadata = () => {
@@ -789,59 +341,76 @@ export default function VirtualOrchestra() {
 
     // Cleanup function
     return () => {
-      if (audioEnabled) {
-        stopAllVoices();
-        voiceSynth.dispose();
-      }
+      // No cleanup needed for UI-only functionality
     };
-  }, [onResults, handPreference, audioEnabled, stopAllVoices, voiceSynth]);
+  }, [onResults, handPreference]);
 
-  const activeSingerIndex = controlHand.detected ? getActiveSinger(controlHand.x) : -1;
   const currentPitch = controlHand.detected ? getPitchFromY(controlHand.y) : 0;
   const currentVolume = volumeHand.detected ? getVolumeFromY(volumeHand.y) : 0.5;
 
   // Hand preference selection page
   if (handPreference === null) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex items-center justify-center">
-        <div className="text-center p-8 bg-white/10 backdrop-blur-lg rounded-2xl shadow-2xl max-w-md">
-          <h1 className="text-4xl font-bold text-white mb-2">Virtual Orchestra</h1>
-          <p className="text-blue-200 mb-8">Choose your dominant hand for control</p>
+      <div className="min-h-screen bg-gradient-to-br from-gray-900 via-slate-900 to-black flex items-center justify-center relative overflow-hidden">
+        {/* Gradient orb background */}
+        <div className="absolute inset-0">
+          <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-gradient-to-br from-orange-400/20 via-red-400/10 to-transparent rounded-full blur-3xl"></div>
+          <div className="absolute bottom-1/3 right-1/4 w-80 h-80 bg-gradient-to-br from-blue-500/15 via-purple-500/10 to-transparent rounded-full blur-3xl"></div>
+          <div className="absolute top-1/2 right-1/3 w-64 h-64 bg-gradient-to-br from-pink-400/10 via-orange-300/10 to-transparent rounded-full blur-2xl"></div>
+        </div>
+        
+        {/* Grain texture overlay */}
+        <div className="absolute inset-0 opacity-40 bg-[radial-gradient(circle_at_1px_1px,rgba(255,255,255,0.15)_1px,transparent_0)] bg-[length:4px_4px]"></div>
+        
+        <div className="relative z-10 text-center p-12 bg-black/20 backdrop-blur-xl rounded-3xl shadow-2xl max-w-lg border border-white/10">
+          <h1 className="text-5xl font-light text-white mb-3 tracking-tight">
+            Motion
+            <br />
+            <span className="font-normal bg-gradient-to-r from-orange-300 to-red-300 bg-clip-text text-transparent">Wave</span>
+          </h1>
+          <p className="text-gray-300 mb-10 text-lg font-light">Choose your dominant hand for gesture control</p>
           
           <div className="space-y-4">
             <button
               onClick={() => setHandPreference('right')}
-              className="w-full p-6 bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white rounded-xl font-semibold text-lg transition-all duration-200 transform hover:scale-105 shadow-lg"
+              className="group w-full p-8 bg-gradient-to-r from-orange-500/20 to-red-500/20 hover:from-orange-500/30 hover:to-red-500/30 backdrop-blur-sm border border-orange-400/20 hover:border-orange-400/40 text-white rounded-2xl font-light text-xl transition-all duration-300 transform hover:scale-[1.02] shadow-xl relative overflow-hidden"
             >
-              <div className="flex items-center justify-center space-x-3">
-                <span className="text-2xl">👋</span>
-                <div>
-                  <div>Right Handed</div>
-                  <div className="text-sm opacity-80">Right hand controls pitch & vowel</div>
+              {/* Button grain overlay */}
+              <div className="absolute inset-0 opacity-20 bg-[radial-gradient(circle_at_1px_1px,rgba(255,255,255,0.1)_1px,transparent_0)] bg-[length:3px_3px]"></div>
+              <div className="relative flex items-center justify-center space-x-4">
+                <span className="text-3xl opacity-80">👋</span>
+                <div className="text-left">
+                  <div className="text-xl">Right Handed</div>
+                  <div className="text-sm opacity-60 font-light">Right hand controls gesture detection</div>
                 </div>
               </div>
             </button>
             
             <button
               onClick={() => setHandPreference('left')}
-              className="w-full p-6 bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 text-white rounded-xl font-semibold text-lg transition-all duration-200 transform hover:scale-105 shadow-lg"
+              className="group w-full p-8 bg-gradient-to-r from-blue-500/20 to-purple-500/20 hover:from-blue-500/30 hover:to-purple-500/30 backdrop-blur-sm border border-blue-400/20 hover:border-blue-400/40 text-white rounded-2xl font-light text-xl transition-all duration-300 transform hover:scale-[1.02] shadow-xl relative overflow-hidden"
             >
-              <div className="flex items-center justify-center space-x-3">
-                <span className="text-2xl">🤚</span>
-                <div>
-                  <div>Left Handed</div>
-                  <div className="text-sm opacity-80">Left hand controls pitch & vowel</div>
+              {/* Button grain overlay */}
+              <div className="absolute inset-0 opacity-20 bg-[radial-gradient(circle_at_1px_1px,rgba(255,255,255,0.1)_1px,transparent_0)] bg-[length:3px_3px]"></div>
+              <div className="relative flex items-center justify-center space-x-4">
+                <span className="text-3xl opacity-80">🤚</span>
+                <div className="text-left">
+                  <div className="text-xl">Left Handed</div>
+                  <div className="text-sm opacity-60 font-light">Left hand controls gesture detection</div>
                 </div>
               </div>
             </button>
           </div>
           
-          <div className="mt-8 p-4 bg-blue-900/50 rounded-lg">
-            <p className="text-blue-200 text-sm">
-              <strong>Control System:</strong><br/>
-              • Dominant hand: Singer selection, pitch, vowel<br/>
-              • Other hand: Volume control
-            </p>
+          <div className="mt-10 p-6 bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10 relative overflow-hidden">
+            <div className="absolute inset-0 opacity-10 bg-[radial-gradient(circle_at_1px_1px,rgba(255,255,255,0.1)_1px,transparent_0)] bg-[length:2px_2px]"></div>
+            <div className="relative">
+              <p className="text-gray-300 text-sm font-light">
+                <strong className="text-orange-300 font-medium">Gesture Detection</strong><br/>
+                <span className="opacity-80">• Dominant hand: Pitch and vowel gestures</span><br/>
+                <span className="opacity-80">• Other hand: Volume control gestures</span>
+              </p>
+            </div>
           </div>
         </div>
       </div>
@@ -850,296 +419,95 @@ export default function VirtualOrchestra() {
 
   if (error) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-gray-100">
-        <div className="text-center p-8 bg-white rounded-lg shadow-lg">
-          <h1 className="text-2xl font-bold text-red-600 mb-4">Error</h1>
-          <p className="text-gray-700">{error}</p>
-          <p className="text-sm text-gray-500 mt-2">
-            Make sure you've granted camera permissions and are using HTTPS
-          </p>
-          <button 
-            onClick={() => setHandPreference(null)}
-            className="mt-4 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
-          >
-            Back to Hand Selection
-          </button>
+      <div className="min-h-screen bg-gradient-to-br from-gray-900 via-slate-900 to-black flex items-center justify-center relative overflow-hidden">
+        {/* Background gradient orbs */}
+        <div className="absolute inset-0">
+          <div className="absolute top-1/3 left-1/4 w-80 h-80 bg-gradient-to-br from-red-400/20 via-orange-400/10 to-transparent rounded-full blur-3xl"></div>
+          <div className="absolute bottom-1/3 right-1/4 w-96 h-96 bg-gradient-to-br from-blue-500/15 via-purple-500/10 to-transparent rounded-full blur-3xl"></div>
+        </div>
+        
+        {/* Grain texture overlay */}
+        <div className="absolute inset-0 opacity-40 bg-[radial-gradient(circle_at_1px_1px,rgba(255,255,255,0.15)_1px,transparent_0)] bg-[length:4px_4px]"></div>
+        
+        <div className="relative z-10 text-center p-12 bg-black/20 backdrop-blur-xl rounded-3xl shadow-2xl max-w-lg border border-white/10">
+          <div className="absolute inset-0 opacity-20 bg-[radial-gradient(circle_at_1px_1px,rgba(255,255,255,0.1)_1px,transparent_0)] bg-[length:3px_3px]"></div>
+          <div className="relative">
+            <h1 className="text-4xl font-light text-red-300 mb-4 tracking-tight">Error</h1>
+            <p className="text-gray-300 font-light text-lg mb-4">{error}</p>
+            <p className="text-sm text-gray-400 font-light mb-8">
+              Make sure you've granted camera permissions and are using HTTPS
+            </p>
+            <button 
+              onClick={() => setHandPreference(null)}
+              className="px-8 py-4 bg-gradient-to-r from-orange-500/20 to-red-500/20 hover:from-orange-500/30 hover:to-red-500/30 backdrop-blur-sm border border-orange-400/20 hover:border-orange-400/40 text-white rounded-2xl font-light text-lg transition-all duration-300 transform hover:scale-[1.02] shadow-xl relative overflow-hidden"
+            >
+              <div className="absolute inset-0 opacity-20 bg-[radial-gradient(circle_at_1px_1px,rgba(255,255,255,0.1)_1px,transparent_0)] bg-[length:3px_3px]"></div>
+              <span className="relative">Back to Hand Selection</span>
+            </button>
+          </div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gray-900 text-white">
-      <div className="max-w-6xl mx-auto p-4">
+    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-slate-900 to-black text-white relative overflow-hidden">
+      {/* Background gradient orbs */}
+      <div className="absolute inset-0">
+        <div className="absolute top-1/6 left-1/5 w-80 h-80 bg-gradient-to-br from-orange-400/15 via-red-400/10 to-transparent rounded-full blur-3xl"></div>
+        <div className="absolute bottom-1/4 right-1/6 w-96 h-96 bg-gradient-to-br from-blue-500/10 via-purple-500/5 to-transparent rounded-full blur-3xl"></div>
+        <div className="absolute top-2/3 left-1/3 w-64 h-64 bg-gradient-to-br from-pink-400/8 via-orange-300/8 to-transparent rounded-full blur-2xl"></div>
+      </div>
+      
+      {/* Grain texture overlay */}
+      <div className="absolute inset-0 opacity-30 bg-[radial-gradient(circle_at_1px_1px,rgba(255,255,255,0.1)_1px,transparent_0)] bg-[length:4px_4px]"></div>
+      
+      <div className="relative z-10 max-w-5xl mx-auto p-6 h-screen flex flex-col">
         <div className="flex items-center justify-between mb-6">
-          <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
-            Virtual Orchestra
+          <h1 className="text-4xl font-light text-white tracking-tight">
+            Motion <span className="font-normal bg-gradient-to-r from-orange-300 to-red-300 bg-clip-text text-transparent">Wave</span>
           </h1>
           <button 
             onClick={() => setHandPreference(null)}
-            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm transition-colors"
+            className="px-4 py-2 bg-white/10 backdrop-blur-sm hover:bg-white/20 border border-white/20 hover:border-white/40 rounded-xl text-sm font-light transition-all duration-300 relative overflow-hidden"
           >
-            Change Hand Preference
+            <div className="absolute inset-0 opacity-20 bg-[radial-gradient(circle_at_1px_1px,rgba(255,255,255,0.1)_1px,transparent_0)] bg-[length:3px_3px]"></div>
+            <span className="relative">Change Hand</span>
           </button>
         </div>
         
-        <div className="mb-4 text-center">
-          <div className="flex items-center justify-center gap-4 mb-2">
-            <span className="text-lg">
-              <strong>{handPreference === 'right' ? 'Right' : 'Left'} hand:</strong> Pitch & Vowel | 
-              <strong> {handPreference === 'right' ? 'Left' : 'Right'} hand:</strong> Volume
-            </span>
-            
-            {/* Audio Controls */}
-            <div className="flex items-center gap-2">
-              {!audioEnabled ? (
-                <button
-                  onClick={initializeAudio}
-                  className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-semibold transition-colors"
-                >
-                  🎵 Enable Audio
-                </button>
-              ) : (
-                <div className="flex items-center gap-2">
-                  <div className={`flex items-center gap-1 px-3 py-1 rounded-lg text-sm ${
-                    isPlaying ? 'bg-green-600 text-white' : 'bg-gray-600 text-gray-300'
-                  }`}>
-                    {isPlaying ? '🎵 Playing' : '🔇 Silent'}
-                  </div>
-                  <button
-                    onClick={stopAllVoices}
-                    className="px-3 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-sm transition-colors"
-                  >
-                    Stop
-                  </button>
-                  
-                  {/* Manual Mode Toggle */}
-                  <button
-                    onClick={() => setManualMode(!manualMode)}
-                    className={`px-3 py-1 rounded text-sm transition-colors ${
-                      manualMode ? 'bg-blue-600 text-white' : 'bg-gray-600 text-gray-300'
-                    }`}
-                  >
-                    Manual
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-          
-          {/* Manual Controls */}
-          {manualMode && audioEnabled && (
-            <div className="mb-4 p-4 bg-blue-900/20 rounded-lg">
-              <h3 className="text-lg font-semibold mb-3 text-center">Manual Orchestra Controls</h3>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                {/* Singer Selection */}
-                <div>
-                  <label className="block text-sm font-medium mb-2">Lead Singer</label>
-                  <select 
-                    value={manualSinger}
-                    onChange={(e) => setManualSinger(parseInt(e.target.value))}
-                    className="w-full p-2 bg-gray-700 text-white rounded"
-                  >
-                    <option value={0}>Bass</option>
-                    <option value={1}>Tenor</option>
-                    <option value={2}>Mezzo-Soprano</option>
-                    <option value={3}>Soprano</option>
-                  </select>
-                </div>
-                
-                {/* Pitch */}
-                <div>
-                  <label className="block text-sm font-medium mb-2">
-                    Pitch: {midiToNoteName(pitchToMidi(manualPitch, manualSinger))}
-                  </label>
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.01"
-                    value={manualPitch}
-                    onChange={(e) => setManualPitch(parseFloat(e.target.value))}
-                    className="w-full"
-                  />
-                </div>
-                
-                {/* Volume */}
-                <div>
-                  <label className="block text-sm font-medium mb-2">
-                    Volume: {(manualVolume * 100).toFixed(0)}%
-                  </label>
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.01"
-                    value={manualVolume}
-                    onChange={(e) => setManualVolume(parseFloat(e.target.value))}
-                    className="w-full"
-                  />
-                </div>
-                
-                {/* Vowel */}
-                <div>
-                  <label className="block text-sm font-medium mb-2">Vowel</label>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => setManualVowel('A')}
-                      className={`flex-1 py-2 px-3 rounded text-sm font-bold ${
-                        manualVowel === 'A' ? 'bg-blue-600 text-white' : 'bg-gray-600 text-gray-300'
-                      }`}
-                    >
-                      A
-                    </button>
-                    <button
-                      onClick={() => setManualVowel('O')}
-                      className={`flex-1 py-2 px-3 rounded text-sm font-bold ${
-                        manualVowel === 'O' ? 'bg-red-600 text-white' : 'bg-gray-600 text-gray-300'
-                      }`}
-                    >
-                      O
-                    </button>
-                  </div>
-                </div>
+        {isLoading && (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="p-8 bg-black/20 backdrop-blur-xl rounded-3xl border border-white/10 relative overflow-hidden">
+              <div className="absolute inset-0 opacity-20 bg-[radial-gradient(circle_at_1px_1px,rgba(255,255,255,0.1)_1px,transparent_0)] bg-[length:3px_3px]"></div>
+              <div className="relative text-center">
+                <div className="inline-block animate-spin rounded-full h-10 w-10 border-2 border-orange-400/30 border-t-orange-400 mb-4"></div>
+                <p className="text-gray-300 font-light text-lg">Initializing camera and hand tracking...</p>
               </div>
             </div>
-          )}
-        </div>
-        
-        {isLoading && (
-          <div className="text-center mb-6">
-            <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-purple-400"></div>
-            <p className="mt-2 text-gray-300">Initializing camera and hand tracking...</p>
           </div>
         )}
         
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Camera Feed */}
-          <div className="lg:col-span-2">
-            <div className="relative bg-black rounded-lg overflow-hidden aspect-video">
-              <video
-                ref={videoRef}
-                className="absolute inset-0 w-full h-full object-cover"
-                style={{ transform: 'scaleX(-1)' }}
-                playsInline
-                muted
-              />
-              <canvas
-                ref={canvasRef}
-                width={640}
-                height={480}
-                className="relative z-10 w-full h-full"
-                style={{ transform: 'scaleX(-1)' }}
-              />
-            </div>
+        {/* Centered Camera Feed */}
+        <div className="flex-1 flex items-center justify-center">
+          <div className="relative bg-black/40 backdrop-blur-sm rounded-3xl overflow-hidden w-full max-w-4xl aspect-video border border-white/10 shadow-2xl">
+            {/* Grain overlay on video */}
+            <div className="absolute inset-0 opacity-20 bg-[radial-gradient(circle_at_1px_1px,rgba(255,255,255,0.1)_1px,transparent_0)] bg-[length:3px_3px] z-20 pointer-events-none"></div>
             
-            <div className="mt-4 text-center">
-              <div className="mb-4">
-                <h3 className="font-semibold text-lg mb-2">Soprano Control</h3>
-                <p className="text-gray-300">
-                  Control Hand: <span className="font-bold text-green-400">{controlHand.detected ? 'DETECTED' : 'NOT DETECTED'}</span>
-                </p>
-                {controlHand.detected && (
-                  <div className="space-y-2 mt-2">
-                    <div className="text-3xl font-bold text-yellow-400">
-                      ♪ {midiToNoteName(pitchToMidi(currentPitch, 3))}
-                    </div>
-                    <div className="flex items-center justify-center gap-4">
-                      <span className="text-gray-300">
-                        Pitch: {(currentPitch * 100).toFixed(0)}%
-                      </span>
-                      <span className={`font-bold text-2xl ${
-                        controlHand.vowel === 'A' ? 'text-blue-400' : 
-                        controlHand.vowel === 'O' ? 'text-red-400' : 'text-gray-400'
-                      }`}>
-                        {controlHand.vowel}
-                      </span>
-                    </div>
-                  </div>
-                )}
-              </div>
-              
-              <div className="mb-4">
-                <p className="text-gray-300">
-                  Volume Hand: <span className="font-bold text-cyan-400">{volumeHand.detected ? 'DETECTED' : 'NOT DETECTED'}</span>
-                </p>
-                {volumeHand.detected && (
-                  <p className="text-gray-300">
-                    Volume: <span className="font-bold text-green-400">{(currentVolume * 100).toFixed(0)}%</span>
-                  </p>
-                )}
-              </div>
-                
-              {/* Current Harmony Display */}
-              {currentHarmony && (
-                <div className="p-3 bg-gray-800 rounded-lg inline-block">
-                  <div className="text-sm text-gray-400 mb-2">Four-Part Harmony:</div>
-                  <div className="grid grid-cols-2 gap-2 text-sm">
-                    <div className="text-amber-600">S: {midiToNoteName(currentHarmony.soprano.midiNote)}</div>
-                    <div className="text-pink-400">M: {midiToNoteName(currentHarmony.mezzoSoprano.midiNote)}</div>
-                    <div className="text-blue-400">T: {midiToNoteName(currentHarmony.tenor.midiNote)}</div>
-                    <div className="text-amber-800">B: {midiToNoteName(currentHarmony.bass.midiNote)}</div>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-          
-          {/* Simple Control Panel */}
-          <div className="space-y-6">
-            <div className="text-center">
-              <h2 className="text-2xl font-semibold mb-4">Virtual Choir</h2>
-              <div className="p-4 bg-gray-800 rounded-lg">
-                <div className="text-lg font-medium text-yellow-400 mb-2">Soprano (Lead)</div>
-                <div className="text-sm text-gray-400 mb-4">You control the soprano voice</div>
-                
-                {currentHarmony && (
-                  <div className="space-y-3">
-                    {/* Soprano */}
-                    <div className="p-3 bg-yellow-900/30 rounded border border-yellow-600">
-                      <div className="flex justify-between items-center">
-                        <span className="font-semibold text-yellow-400">Soprano</span>
-                        <span className="text-yellow-300">♪ {midiToNoteName(currentHarmony.soprano.midiNote)}</span>
-                      </div>
-                      <div className="text-xs text-yellow-200 mt-1">
-                        LEAD - {(currentHarmony.soprano.velocity * 100).toFixed(0)}% | {currentHarmony.soprano.vowel}
-                      </div>
-                    </div>
-                    
-                    {/* Harmony Voices */}
-                    <div className="p-3 bg-gray-700 rounded">
-                      <div className="text-sm text-gray-300 mb-2 font-medium">Auto Harmony:</div>
-                      <div className="space-y-2 text-sm">
-                        <div className="flex justify-between">
-                          <span className="text-pink-400">Mezzo-Soprano</span>
-                          <span>♪ {midiToNoteName(currentHarmony.mezzoSoprano.midiNote)}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-blue-400">Tenor</span>
-                          <span>♪ {midiToNoteName(currentHarmony.tenor.midiNote)}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-amber-700">Bass</span>
-                          <span>♪ {midiToNoteName(currentHarmony.bass.midiNote)}</span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-            
-            <div className="p-4 bg-blue-900 rounded-lg">
-              <h3 className="font-medium text-blue-200 mb-2">How to Use:</h3>
-              <ul className="text-sm text-blue-100 space-y-1">
-                <li>• Use your <strong>dominant hand</strong> to control soprano</li>
-                <li>• Move <strong>up/down</strong> to change pitch</li>
-                <li>• <strong>Open palm</strong> = "A" vowel</li>
-                <li>• <strong>Closed fist</strong> = "O" vowel</li>
-                <li>• Use your <strong>other hand</strong> to control volume</li>
-                <li>• The other 3 voices harmonize automatically</li>
-              </ul>
-            </div>
+            <video
+              ref={videoRef}
+              className="absolute inset-0 w-full h-full object-cover rounded-3xl"
+              style={{ transform: 'scaleX(-1)' }}
+              playsInline
+              muted
+            />
+            <canvas
+              ref={canvasRef}
+              width={640}
+              height={480}
+              className="relative z-10 w-full h-full rounded-3xl"
+              style={{ transform: 'scaleX(-1)' }}
+            />
           </div>
         </div>
       </div>
