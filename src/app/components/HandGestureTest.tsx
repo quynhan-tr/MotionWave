@@ -2,7 +2,165 @@
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 
-// Simplified types to avoid build conflicts
+// Audio synthesis class using Web Audio API directly
+class VoiceScanner {
+  private audioContext: AudioContext | null = null;
+  private oscillators: { [key: string]: OscillatorNode | null } = {};
+  private gainNodes: { [key: string]: GainNode } = {};
+  private filterNodes: { [key: string]: BiquadFilterNode } = {};
+  private initialized = false;
+
+  async initialize() {
+    if (this.initialized) return;
+    
+    try {
+      this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      
+      // Create audio nodes for each voice
+      const voices = ['bass', 'tenor', 'mezzoSoprano', 'soprano'];
+      
+      voices.forEach(voice => {
+        // Create gain node for volume control
+        this.gainNodes[voice] = this.audioContext!.createGain();
+        this.gainNodes[voice].gain.value = 0.3; // Default volume
+        
+        // Create filter for vowel formants
+        this.filterNodes[voice] = this.audioContext!.createBiquadFilter();
+        this.filterNodes[voice].type = 'bandpass';
+        this.filterNodes[voice].Q.value = 2;
+        this.filterNodes[voice].frequency.value = this.getFormantFrequency(voice, 'A');
+        
+        // Connect filter to gain to destination
+        this.filterNodes[voice].connect(this.gainNodes[voice]);
+        this.gainNodes[voice].connect(this.audioContext!.destination);
+        
+        // Initialize oscillator as null
+        this.oscillators[voice] = null;
+      });
+      
+      this.initialized = true;
+    } catch (error) {
+      console.error('Failed to initialize Web Audio:', error);
+    }
+  }
+
+  private getFormantFrequency(voice: string, vowel: 'A' | 'O'): number {
+    const formants = {
+      bass: { A: 600, O: 400 },
+      tenor: { A: 650, O: 430 },
+      mezzoSoprano: { A: 700, O: 460 },
+      soprano: { A: 750, O: 500 }
+    };
+    
+    return formants[voice as keyof typeof formants]?.[vowel] || 600;
+  }
+
+  private midiToFrequency(midiNote: number): number {
+    return 440 * Math.pow(2, (midiNote - 69) / 12);
+  }
+
+  playNote(voice: string, midiNote: number, velocity: number, vowel: 'A' | 'O') {
+    if (!this.initialized || !this.audioContext) return;
+    
+    // Stop current oscillator if playing
+    this.stopNote(voice);
+    
+    // Create new oscillator
+    const oscillator = this.audioContext.createOscillator();
+    oscillator.type = 'sawtooth';
+    oscillator.frequency.value = this.midiToFrequency(midiNote);
+    
+    // Connect to filter chain
+    oscillator.connect(this.filterNodes[voice]);
+    
+    // Update filter frequency for vowel
+    this.filterNodes[voice].frequency.setTargetAtTime(
+      this.getFormantFrequency(voice, vowel),
+      this.audioContext.currentTime,
+      0.1
+    );
+    
+    // Set volume
+    this.gainNodes[voice].gain.setTargetAtTime(
+      velocity * 0.3,
+      this.audioContext.currentTime,
+      0.05
+    );
+    
+    // Start oscillator
+    oscillator.start();
+    this.oscillators[voice] = oscillator;
+  }
+
+  updateNote(voice: string, midiNote: number, velocity: number, vowel: 'A' | 'O') {
+    if (!this.initialized || !this.audioContext) return;
+    
+    // Update filter frequency for vowel changes
+    this.filterNodes[voice].frequency.setTargetAtTime(
+      this.getFormantFrequency(voice, vowel),
+      this.audioContext.currentTime,
+      0.05
+    );
+    
+    // Update volume
+    this.gainNodes[voice].gain.setTargetAtTime(
+      velocity * 0.3,
+      this.audioContext.currentTime,
+      0.05
+    );
+    
+    // Update frequency if oscillator exists
+    if (this.oscillators[voice]) {
+      this.oscillators[voice]!.frequency.setTargetAtTime(
+        this.midiToFrequency(midiNote),
+        this.audioContext.currentTime,
+        0.05
+      );
+    }
+  }
+
+  stopNote(voice: string) {
+    if (!this.initialized || !this.audioContext) return;
+    
+    const oscillator = this.oscillators[voice];
+    if (oscillator) {
+      try {
+        oscillator.stop();
+      } catch (e) {
+        // Oscillator may already be stopped
+      }
+      this.oscillators[voice] = null;
+    }
+  }
+
+  setVolume(voice: string, volume: number) {
+    if (!this.initialized || !this.audioContext) return;
+    
+    this.gainNodes[voice].gain.setTargetAtTime(
+      volume * 0.3,
+      this.audioContext.currentTime,
+      0.1
+    );
+  }
+
+  dispose() {
+    // Stop all oscillators
+    Object.keys(this.oscillators).forEach(voice => {
+      this.stopNote(voice);
+    });
+    
+    // Clean up audio context
+    if (this.audioContext) {
+      this.audioContext.close();
+      this.audioContext = null;
+    }
+    
+    this.oscillators = {};
+    this.gainNodes = {};
+    this.filterNodes = {};
+    this.initialized = false;
+  }
+}
 interface Note {
   midiNote: number;
   velocity: number;
@@ -174,8 +332,68 @@ export default function VirtualOrchestra() {
   // Harmonizer state
   const [harmonizer] = useState(() => new SimpleHarmonizer());
   const [currentHarmony, setCurrentHarmony] = useState<HarmonyResult | null>(null);
+  
+  // Audio synthesis state
+  const [voiceSynth] = useState(() => new VoiceScanner());
+  const [audioEnabled, setAudioEnabled] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const previousNotesRef = useRef<{ [voice: string]: number }>({});
+  
+  // Manual controls for testing audio when MediaPipe fails
+  const [manualMode, setManualMode] = useState(false);
+  const [manualPitch, setManualPitch] = useState(0.5);
+  const [manualVolume, setManualVolume] = useState(0.7);
+  const [manualVowel, setManualVowel] = useState<'A' | 'O'>('A');
+  const [manualSinger, setManualSinger] = useState(1); // Default to Tenor
 
-  // Get active singer based on hand X position
+  // Initialize audio when user enables it
+  const initializeAudio = useCallback(async () => {
+    try {
+      await voiceSynth.initialize();
+      setAudioEnabled(true);
+    } catch (error) {
+      console.error('Failed to initialize audio:', error);
+    }
+  }, [voiceSynth]);
+
+  // Play harmony notes
+  const playHarmony = useCallback((harmony: HarmonyResult) => {
+    if (!audioEnabled) return;
+    
+    const voices = ['bass', 'tenor', 'mezzoSoprano', 'soprano'] as const;
+    
+    voices.forEach(voice => {
+      const note = harmony[voice];
+      const previousNote = previousNotesRef.current[voice];
+      
+      // Only trigger new note if it changed
+      if (note.midiNote !== previousNote) {
+        voiceSynth.playNote(voice, note.midiNote, note.velocity, note.vowel);
+        previousNotesRef.current[voice] = note.midiNote;
+      } else {
+        // Update existing note (vowel/volume changes)
+        voiceSynth.updateNote(voice, note.midiNote, note.velocity, note.vowel);
+      }
+      
+      // Set volume
+      voiceSynth.setVolume(voice, note.velocity);
+    });
+    
+    setIsPlaying(true);
+  }, [audioEnabled, voiceSynth]);
+
+  // Stop all voices
+  const stopAllVoices = useCallback(() => {
+    if (!audioEnabled) return;
+    
+    const voices = ['bass', 'tenor', 'mezzoSoprano', 'soprano'];
+    voices.forEach(voice => {
+      voiceSynth.stopNote(voice);
+    });
+    
+    previousNotesRef.current = {};
+    setIsPlaying(false);
+  }, [audioEnabled, voiceSynth]);
   const getActiveSinger = useCallback((x: number): number => {
     if (x < 0.25) return 0; // Bass
     if (x < 0.5) return 1;  // Tenor  
@@ -233,9 +451,12 @@ export default function VirtualOrchestra() {
     return `${noteNames[noteIndex]}${octave}`;
   }, []);
 
-  // Generate harmony when lead voice changes
+  // Generate harmony when lead voice changes (supports manual mode)
   const updateHarmony = useCallback((activeSingerIndex: number, pitch: number, volume: number, vowel: 'A' | 'O' | 'NONE') => {
-    if (activeSingerIndex === -1 || vowel === 'NONE') return;
+    if (activeSingerIndex === -1 || vowel === 'NONE') {
+      stopAllVoices();
+      return;
+    }
     
     const singerNames = ['bass', 'tenor', 'mezzoSoprano', 'soprano'] as const;
     const leadVoice = singerNames[activeSingerIndex];
@@ -249,7 +470,24 @@ export default function VirtualOrchestra() {
     
     const harmony = harmonizer.generateHarmony(leadVoice, leadNote, volume);
     setCurrentHarmony(harmony);
-  }, [harmonizer, pitchToMidi]);
+    
+    // Play the harmony if audio is enabled
+    if (audioEnabled) {
+      playHarmony(harmony);
+    }
+  }, [harmonizer, pitchToMidi, audioEnabled, playHarmony, stopAllVoices]);
+
+  // Manual harmony trigger for testing
+  const triggerManualHarmony = useCallback(() => {
+    updateHarmony(manualSinger, manualPitch, manualVolume, manualVowel);
+  }, [updateHarmony, manualSinger, manualPitch, manualVolume, manualVowel]);
+
+  // Update manual harmony when controls change
+  useEffect(() => {
+    if (manualMode && audioEnabled) {
+      triggerManualHarmony();
+    }
+  }, [manualMode, audioEnabled, triggerManualHarmony, manualPitch, manualVolume, manualVowel, manualSinger]);
 
   // Detect vowel based on hand gesture
   const detectVowel = useCallback((landmarks: any[]): 'A' | 'O' | 'NONE' => {
@@ -285,30 +523,16 @@ export default function VirtualOrchestra() {
     // Draw video frame
     ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
     
-    // Draw column dividers
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([10, 10]);
-    for (let i = 1; i < 4; i++) {
-      const x = (canvas.width / 4) * i;
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, canvas.height);
-      ctx.stroke();
-    }
-    ctx.setLineDash([]);
-
-    // Draw singer labels
-    ctx.font = 'bold 20px Arial';
+    // Draw soprano label only
+    ctx.font = 'bold 24px Arial';
     ctx.fillStyle = 'white';
     ctx.strokeStyle = 'black';
     ctx.lineWidth = 3;
-    singers.forEach((singer, index) => {
-      const x = (canvas.width / 4) * index + (canvas.width / 8);
-      const y = 40;
-      ctx.strokeText(singer.name, x - ctx.measureText(singer.name).width / 2, y);
-      ctx.fillText(singer.name, x - ctx.measureText(singer.name).width / 2, y);
-    });
+    const sopranoText = 'Soprano Control';
+    const textWidth = ctx.measureText(sopranoText).width;
+    const textX = (canvas.width - textWidth) / 2;
+    ctx.strokeText(sopranoText, textX, 40);
+    ctx.fillText(sopranoText, textX, 40);
 
     // Draw volume indicator on the side
     const volumeBarX = handPreference === 'right' ? 20 : canvas.width - 40;
@@ -431,32 +655,25 @@ export default function VirtualOrchestra() {
         
         updateHarmony(activeIndex, currentPitch, currentVol, controlHandData.vowel);
         
-        // Highlight active column and draw pitch line
-        const columnWidth = canvas.width / 4;
-        const columnX = columnWidth * activeIndex;
-        
-        ctx.fillStyle = `${singers[activeIndex].color}40`;
-        ctx.fillRect(columnX, 0, columnWidth, canvas.height);
-        
-        // Draw pitch indicator line with vowel label
+        // Draw pitch indicator line across full width
         const pitchY = controlHandData.y * canvas.height;
-        ctx.strokeStyle = singers[activeIndex].color;
+        ctx.strokeStyle = '#FFD700'; // Soprano gold color
         ctx.lineWidth = 4;
         ctx.beginPath();
-        ctx.moveTo(columnX, pitchY);
-        ctx.lineTo(columnX + columnWidth, pitchY);
+        ctx.moveTo(0, pitchY);
+        ctx.lineTo(canvas.width, pitchY);
         ctx.stroke();
 
-        // Draw vowel indicator
+        // Draw vowel indicator in center
         if (controlHandData.vowel !== 'NONE') {
-          ctx.font = 'bold 40px Arial';
-          ctx.fillStyle = singers[activeIndex].color;
+          ctx.font = 'bold 48px Arial';
+          ctx.fillStyle = '#FFD700';
           ctx.strokeStyle = 'white';
-          ctx.lineWidth = 3;
+          ctx.lineWidth = 4;
           const vowelText = controlHandData.vowel;
           const textWidth = ctx.measureText(vowelText).width;
-          const textX = columnX + (columnWidth - textWidth) / 2;
-          const textY = pitchY - 20;
+          const textX = (canvas.width - textWidth) / 2;
+          const textY = pitchY - 30;
           
           ctx.strokeText(vowelText, textX, textY);
           ctx.fillText(vowelText, textX, textY);
@@ -509,13 +726,13 @@ export default function VirtualOrchestra() {
 
         try {
           console.log('Loading MediaPipe...');
-          await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js');
+          await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/hands@latest/hands.js');
           console.log('MediaPipe loaded successfully');
           
           // Initialize MediaPipe Hands
           const hands = new (window as any).Hands({
             locateFile: (file: string) => {
-              return `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/${file}`;
+              return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
             }
           });
           
@@ -550,8 +767,9 @@ export default function VirtualOrchestra() {
           
         } catch (err) {
           console.error('MediaPipe loading error:', err);
-          setError('Failed to load MediaPipe. Please refresh the page.');
+          setError('MediaPipe failed to load. Switch to manual mode to test audio.');
           setIsLoading(false);
+          setManualMode(true); // Automatically enable manual mode
         }
         
         videoRef.current.onloadedmetadata = () => {
@@ -568,7 +786,15 @@ export default function VirtualOrchestra() {
     if (handPreference) {
       initializeCamera();
     }
-  }, [onResults, handPreference]);
+
+    // Cleanup function
+    return () => {
+      if (audioEnabled) {
+        stopAllVoices();
+        voiceSynth.dispose();
+      }
+    };
+  }, [onResults, handPreference, audioEnabled, stopAllVoices, voiceSynth]);
 
   const activeSingerIndex = controlHand.detected ? getActiveSinger(controlHand.x) : -1;
   const currentPitch = controlHand.detected ? getPitchFromY(controlHand.y) : 0;
@@ -658,10 +884,126 @@ export default function VirtualOrchestra() {
         </div>
         
         <div className="mb-4 text-center">
-          <span className="text-lg">
-            <strong>{handPreference === 'right' ? 'Right' : 'Left'} hand:</strong> Pitch & Vowel | 
-            <strong> {handPreference === 'right' ? 'Left' : 'Right'} hand:</strong> Volume
-          </span>
+          <div className="flex items-center justify-center gap-4 mb-2">
+            <span className="text-lg">
+              <strong>{handPreference === 'right' ? 'Right' : 'Left'} hand:</strong> Pitch & Vowel | 
+              <strong> {handPreference === 'right' ? 'Left' : 'Right'} hand:</strong> Volume
+            </span>
+            
+            {/* Audio Controls */}
+            <div className="flex items-center gap-2">
+              {!audioEnabled ? (
+                <button
+                  onClick={initializeAudio}
+                  className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-semibold transition-colors"
+                >
+                  🎵 Enable Audio
+                </button>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <div className={`flex items-center gap-1 px-3 py-1 rounded-lg text-sm ${
+                    isPlaying ? 'bg-green-600 text-white' : 'bg-gray-600 text-gray-300'
+                  }`}>
+                    {isPlaying ? '🎵 Playing' : '🔇 Silent'}
+                  </div>
+                  <button
+                    onClick={stopAllVoices}
+                    className="px-3 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-sm transition-colors"
+                  >
+                    Stop
+                  </button>
+                  
+                  {/* Manual Mode Toggle */}
+                  <button
+                    onClick={() => setManualMode(!manualMode)}
+                    className={`px-3 py-1 rounded text-sm transition-colors ${
+                      manualMode ? 'bg-blue-600 text-white' : 'bg-gray-600 text-gray-300'
+                    }`}
+                  >
+                    Manual
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+          
+          {/* Manual Controls */}
+          {manualMode && audioEnabled && (
+            <div className="mb-4 p-4 bg-blue-900/20 rounded-lg">
+              <h3 className="text-lg font-semibold mb-3 text-center">Manual Orchestra Controls</h3>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                {/* Singer Selection */}
+                <div>
+                  <label className="block text-sm font-medium mb-2">Lead Singer</label>
+                  <select 
+                    value={manualSinger}
+                    onChange={(e) => setManualSinger(parseInt(e.target.value))}
+                    className="w-full p-2 bg-gray-700 text-white rounded"
+                  >
+                    <option value={0}>Bass</option>
+                    <option value={1}>Tenor</option>
+                    <option value={2}>Mezzo-Soprano</option>
+                    <option value={3}>Soprano</option>
+                  </select>
+                </div>
+                
+                {/* Pitch */}
+                <div>
+                  <label className="block text-sm font-medium mb-2">
+                    Pitch: {midiToNoteName(pitchToMidi(manualPitch, manualSinger))}
+                  </label>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={manualPitch}
+                    onChange={(e) => setManualPitch(parseFloat(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
+                
+                {/* Volume */}
+                <div>
+                  <label className="block text-sm font-medium mb-2">
+                    Volume: {(manualVolume * 100).toFixed(0)}%
+                  </label>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={manualVolume}
+                    onChange={(e) => setManualVolume(parseFloat(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
+                
+                {/* Vowel */}
+                <div>
+                  <label className="block text-sm font-medium mb-2">Vowel</label>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setManualVowel('A')}
+                      className={`flex-1 py-2 px-3 rounded text-sm font-bold ${
+                        manualVowel === 'A' ? 'bg-blue-600 text-white' : 'bg-gray-600 text-gray-300'
+                      }`}
+                    >
+                      A
+                    </button>
+                    <button
+                      onClick={() => setManualVowel('O')}
+                      className={`flex-1 py-2 px-3 rounded text-sm font-bold ${
+                        manualVowel === 'O' ? 'bg-red-600 text-white' : 'bg-gray-600 text-gray-300'
+                      }`}
+                    >
+                      O
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
         
         {isLoading && (
@@ -671,9 +1013,9 @@ export default function VirtualOrchestra() {
           </div>
         )}
         
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Camera Feed */}
-          <div className="lg:col-span-3">
+          <div className="lg:col-span-2">
             <div className="relative bg-black rounded-lg overflow-hidden aspect-video">
               <video
                 ref={videoRef}
@@ -691,182 +1033,111 @@ export default function VirtualOrchestra() {
               />
             </div>
             
-            <div className="mt-4 grid grid-cols-2 gap-4 text-center">
-              <div>
-                <h3 className="font-semibold text-lg mb-2">Control Hand ({handPreference === 'right' ? 'Right' : 'Left'})</h3>
+            <div className="mt-4 text-center">
+              <div className="mb-4">
+                <h3 className="font-semibold text-lg mb-2">Soprano Control</h3>
                 <p className="text-gray-300">
-                  Detected: <span className="font-bold text-green-400">{controlHand.detected ? 'YES' : 'NO'}</span>
+                  Control Hand: <span className="font-bold text-green-400">{controlHand.detected ? 'DETECTED' : 'NOT DETECTED'}</span>
                 </p>
                 {controlHand.detected && (
-                  <div className="space-y-1">
-                    <p className="text-gray-300">
-                      Position: X: {(controlHand.x * 100).toFixed(1)}%, Y: {(controlHand.y * 100).toFixed(1)}%
-                    </p>
-                    <div className="text-2xl font-bold text-yellow-400 mt-2">
-                      ♪ {midiToNoteName(pitchToMidi(currentPitch, activeSingerIndex >= 0 ? activeSingerIndex : 0))}
+                  <div className="space-y-2 mt-2">
+                    <div className="text-3xl font-bold text-yellow-400">
+                      ♪ {midiToNoteName(pitchToMidi(currentPitch, 3))}
                     </div>
-                    <p className="text-gray-300">
-                      Vowel: <span className={`font-bold text-lg ${
+                    <div className="flex items-center justify-center gap-4">
+                      <span className="text-gray-300">
+                        Pitch: {(currentPitch * 100).toFixed(0)}%
+                      </span>
+                      <span className={`font-bold text-2xl ${
                         controlHand.vowel === 'A' ? 'text-blue-400' : 
                         controlHand.vowel === 'O' ? 'text-red-400' : 'text-gray-400'
                       }`}>
                         {controlHand.vowel}
                       </span>
-                    </p>
+                    </div>
                   </div>
                 )}
               </div>
               
-              <div>
-                <h3 className="font-semibold text-lg mb-2">Volume Hand ({handPreference === 'right' ? 'Left' : 'Right'})</h3>
+              <div className="mb-4">
                 <p className="text-gray-300">
-                  Detected: <span className="font-bold text-cyan-400">{volumeHand.detected ? 'YES' : 'NO'}</span>
+                  Volume Hand: <span className="font-bold text-cyan-400">{volumeHand.detected ? 'DETECTED' : 'NOT DETECTED'}</span>
                 </p>
                 {volumeHand.detected && (
                   <p className="text-gray-300">
                     Volume: <span className="font-bold text-green-400">{(currentVolume * 100).toFixed(0)}%</span>
                   </p>
                 )}
+              </div>
                 
-                {/* Current Harmony Display */}
+              {/* Current Harmony Display */}
+              {currentHarmony && (
+                <div className="p-3 bg-gray-800 rounded-lg inline-block">
+                  <div className="text-sm text-gray-400 mb-2">Four-Part Harmony:</div>
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    <div className="text-amber-600">S: {midiToNoteName(currentHarmony.soprano.midiNote)}</div>
+                    <div className="text-pink-400">M: {midiToNoteName(currentHarmony.mezzoSoprano.midiNote)}</div>
+                    <div className="text-blue-400">T: {midiToNoteName(currentHarmony.tenor.midiNote)}</div>
+                    <div className="text-amber-800">B: {midiToNoteName(currentHarmony.bass.midiNote)}</div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+          
+          {/* Simple Control Panel */}
+          <div className="space-y-6">
+            <div className="text-center">
+              <h2 className="text-2xl font-semibold mb-4">Virtual Choir</h2>
+              <div className="p-4 bg-gray-800 rounded-lg">
+                <div className="text-lg font-medium text-yellow-400 mb-2">Soprano (Lead)</div>
+                <div className="text-sm text-gray-400 mb-4">You control the soprano voice</div>
+                
                 {currentHarmony && (
-                  <div className="mt-3 p-2 bg-gray-800 rounded-lg">
-                    <div className="text-xs text-gray-400 mb-1">Harmony Notes:</div>
-                    <div className="grid grid-cols-2 gap-1 text-xs">
-                      <div>B: {midiToNoteName(currentHarmony.bass.midiNote)}</div>
-                      <div>T: {midiToNoteName(currentHarmony.tenor.midiNote)}</div>
-                      <div>M: {midiToNoteName(currentHarmony.mezzoSoprano.midiNote)}</div>
-                      <div>S: {midiToNoteName(currentHarmony.soprano.midiNote)}</div>
+                  <div className="space-y-3">
+                    {/* Soprano */}
+                    <div className="p-3 bg-yellow-900/30 rounded border border-yellow-600">
+                      <div className="flex justify-between items-center">
+                        <span className="font-semibold text-yellow-400">Soprano</span>
+                        <span className="text-yellow-300">♪ {midiToNoteName(currentHarmony.soprano.midiNote)}</span>
+                      </div>
+                      <div className="text-xs text-yellow-200 mt-1">
+                        LEAD - {(currentHarmony.soprano.velocity * 100).toFixed(0)}% | {currentHarmony.soprano.vowel}
+                      </div>
+                    </div>
+                    
+                    {/* Harmony Voices */}
+                    <div className="p-3 bg-gray-700 rounded">
+                      <div className="text-sm text-gray-300 mb-2 font-medium">Auto Harmony:</div>
+                      <div className="space-y-2 text-sm">
+                        <div className="flex justify-between">
+                          <span className="text-pink-400">Mezzo-Soprano</span>
+                          <span>♪ {midiToNoteName(currentHarmony.mezzoSoprano.midiNote)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-blue-400">Tenor</span>
+                          <span>♪ {midiToNoteName(currentHarmony.tenor.midiNote)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-amber-700">Bass</span>
+                          <span>♪ {midiToNoteName(currentHarmony.bass.midiNote)}</span>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 )}
               </div>
             </div>
-          </div>
-          
-          {/* Singer Control Panel */}
-          <div className="space-y-4">
-            <h2 className="text-2xl font-semibold text-center mb-4">Singers</h2>
             
-            {singers.map((singer, index) => {
-              const isActive = activeSingerIndex === index;
-              const harmonyNote = currentHarmony ? currentHarmony[
-                ['bass', 'tenor', 'mezzoSoprano', 'soprano'][index] as keyof HarmonyResult
-              ] : null;
-              
-              return (
-                <div
-                  key={singer.name}
-                  className={`p-4 rounded-lg border-2 transition-all duration-200 ${
-                    isActive
-                      ? `border-2 shadow-lg`
-                      : 'border-gray-600 bg-gray-800'
-                  }`}
-                  style={{
-                    backgroundColor: isActive ? `${singer.color}20` : undefined,
-                    borderColor: isActive ? singer.color : undefined,
-                  }}
-                >
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="font-bold text-lg" style={{ color: singer.color }}>
-                      {singer.name}
-                    </span>
-                    <div className="flex gap-2">
-                      <span className={`px-2 py-1 rounded text-xs ${
-                        isActive ? 'bg-green-500 text-white' : 'bg-gray-600 text-gray-300'
-                      }`}>
-                        {isActive ? 'LEAD' : 'HARMONY'}
-                      </span>
-                      {harmonyNote && (
-                        <span className="px-2 py-1 rounded text-xs bg-blue-500 text-white">
-                          {harmonyNote.vowel}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  
-                  <div className="text-sm text-gray-400 mb-2">
-                    Range: {singer.range}
-                    {harmonyNote && (
-                      <div className="text-sm text-green-300 mt-1 font-semibold">
-                        ♪ {midiToNoteName(harmonyNote.midiNote)} | {(harmonyNote.velocity * 100).toFixed(0)}% vol
-                      </div>
-                    )}
-                    {isActive && controlHand.detected && (
-                      <div className="text-sm text-yellow-300 mt-1 font-semibold">
-                        ♪ {midiToNoteName(pitchToMidi(currentPitch, index))} | LEAD
-                      </div>
-                    )}
-                  </div>
-                  
-                  {/* Pitch Indicator */}
-                  <div className="mb-2">
-                    <div className="text-xs text-gray-400 mb-1">Pitch</div>
-                    <div className="h-2 bg-gray-700 rounded">
-                      <div 
-                        className="h-full rounded transition-all duration-100"
-                        style={{ 
-                          width: `${isActive ? currentPitch * 100 : singer.pitch * 100}%`,
-                          backgroundColor: singer.color 
-                        }}
-                      />
-                    </div>
-                    <div className="text-xs text-gray-400 mt-1">
-                      {isActive ? 
-                        `${(currentPitch * 100).toFixed(0)}%` : 
-                        `${(singer.pitch * 100).toFixed(0)}%`
-                      }
-                    </div>
-                  </div>
-
-                  {/* Volume Indicator */}
-                  <div className="mb-2">
-                    <div className="text-xs text-gray-400 mb-1">Volume</div>
-                    <div className="h-2 bg-gray-700 rounded">
-                      <div 
-                        className="h-full rounded transition-all duration-100"
-                        style={{ 
-                          width: `${harmonyNote ? harmonyNote.velocity * 100 : singer.volume * 100}%`,
-                          backgroundColor: '#00FF00'
-                        }}
-                      />
-                    </div>
-                    <div className="text-xs text-gray-400 mt-1">
-                      {harmonyNote ? 
-                        `${(harmonyNote.velocity * 100).toFixed(0)}%` : 
-                        `${(singer.volume * 100).toFixed(0)}%`
-                      }
-                    </div>
-                  </div>
-                  
-                  {/* Vowel Indicator */}
-                  {(isActive && controlHand.detected) || harmonyNote ? (
-                    <div className="mt-2">
-                      <div className="text-xs text-gray-400 mb-1">Vowel</div>
-                      <div className={`text-center py-2 rounded font-bold text-2xl ${
-                        (isActive ? controlHand.vowel : harmonyNote?.vowel) === 'A' ? 'bg-blue-900 text-blue-200' :
-                        (isActive ? controlHand.vowel : harmonyNote?.vowel) === 'O' ? 'bg-red-900 text-red-200' :
-                        'bg-gray-700 text-gray-400'
-                      }`}>
-                        {isActive 
-                          ? (controlHand.vowel === 'NONE' ? '—' : controlHand.vowel)
-                          : (harmonyNote?.vowel || '—')
-                        }
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-              );
-            })}
-            
-            <div className="mt-6 p-4 bg-blue-900 rounded-lg">
-              <h3 className="font-medium text-blue-200 mb-2">Controls:</h3>
+            <div className="p-4 bg-blue-900 rounded-lg">
+              <h3 className="font-medium text-blue-200 mb-2">How to Use:</h3>
               <ul className="text-sm text-blue-100 space-y-1">
-                <li>• <strong>Control hand:</strong> Singer selection (L/R), pitch (U/D)</li>
-                <li>• <strong>Open palm</strong> = "A" vowel (blue)</li>
-                <li>• <strong>Closed fist</strong> = "O" vowel (red)</li>
-                <li>• <strong>Volume hand:</strong> Volume (U/D)</li>
-                <li>• <strong>Colors:</strong> Green/Red = control, Cyan/Magenta = volume</li>
+                <li>• Use your <strong>dominant hand</strong> to control soprano</li>
+                <li>• Move <strong>up/down</strong> to change pitch</li>
+                <li>• <strong>Open palm</strong> = "A" vowel</li>
+                <li>• <strong>Closed fist</strong> = "O" vowel</li>
+                <li>• Use your <strong>other hand</strong> to control volume</li>
+                <li>• The other 3 voices harmonize automatically</li>
               </ul>
             </div>
           </div>
