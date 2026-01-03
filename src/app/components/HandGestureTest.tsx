@@ -608,7 +608,18 @@ export default function HandGestureTracker({ initialHandPreference }: HandGestur
               </div>
             </div>
 
-            {/* Removed Vowel Display */}
+            {/* Control Description */}
+            <div className="p-4 border border-black/10 rounded-2xl bg-white/30 backdrop-blur-sm text-center">
+              <div className="text-black/60 text-xs mb-2 not-italic">Controls</div>
+              <div className="text-sm text-black space-y-1">
+                <div>
+                  <span className="font-bold">{handPreference === 'right' ? 'Right' : 'Left'} Hand:</span> Pitch & Harmony
+                </div>
+                <div>
+                  <span className="font-bold">{handPreference === 'right' ? 'Left' : 'Right'} Hand:</span> Volume
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
