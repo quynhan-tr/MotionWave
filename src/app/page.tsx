@@ -2,11 +2,13 @@
 
 import { useState } from 'react';
 import HandGestureTest from './components/HandGestureTest';
+import AboutModal from './components/AboutModal';
 
 type HandPreference = 'left' | 'right' | null;
 
 export default function Home() {
   const [selectedHand, setSelectedHand] = useState<HandPreference>(null);
+  const [isAboutOpen, setIsAboutOpen] = useState(false);
 
   if (selectedHand) {
     return <HandGestureTest initialHandPreference={selectedHand} />;
@@ -59,6 +61,20 @@ export default function Home() {
           </div>
         </div>
       </div>
+
+      {/* About Modal & Toggle Button */}
+      <button
+        onClick={() => setIsAboutOpen(true)}
+        className="fixed bottom-8 right-8 z-50 w-12 h-12 bg-black text-[#F5F5DC] rounded-full flex items-center justify-center text-2xl shadow-lg hover:scale-110 transition-transform"
+        aria-label="About Motion Wave"
+      >
+        ?
+      </button>
+
+      <AboutModal
+        isOpen={isAboutOpen}
+        onClose={() => setIsAboutOpen(false)}
+      />
     </div>
   );
 }

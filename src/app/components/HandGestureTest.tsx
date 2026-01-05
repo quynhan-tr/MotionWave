@@ -4,6 +4,7 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { useHarmonizer } from '../../hooks/useHarmonizer';
 import { audioEngine } from '../../utils/audioEngine';
 import { midiToNoteName } from '../../types/harmonizer';
+import AboutModal from './AboutModal';
 
 type HandPreference = 'left' | 'right' | null;
 
@@ -61,6 +62,7 @@ export default function HandGestureTracker({ initialHandPreference }: HandGestur
   const [handPreference, setHandPreference] = useState<HandPreference>(initialHandPreference);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isAboutOpen, setIsAboutOpen] = useState(false);
 
   // Harmonizer integration
   const {
@@ -623,6 +625,20 @@ export default function HandGestureTracker({ initialHandPreference }: HandGestur
           </div>
         </div>
       </div>
+
+      {/* About Modal & Toggle Button */}
+      <button
+        onClick={() => setIsAboutOpen(true)}
+        className="fixed bottom-8 right-8 z-[60] w-12 h-12 bg-black text-[#F5F5DC] rounded-full flex items-center justify-center text-2xl shadow-lg hover:scale-110 transition-transform"
+        aria-label="About Motion Wave"
+      >
+        ?
+      </button>
+
+      <AboutModal
+        isOpen={isAboutOpen}
+        onClose={() => setIsAboutOpen(false)}
+      />
     </div>
   );
 }
